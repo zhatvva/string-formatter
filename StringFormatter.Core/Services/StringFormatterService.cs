@@ -214,6 +214,11 @@ namespace StringFormatter.Core.Services
                     throw new ArgumentException($"Invalid parenthesis count (near position {i})");
                 }
             }
+
+            if (count != 0)
+            {
+                throw new ArgumentException($"Invalid parenthesis count");
+            }
         }
     }
 }
