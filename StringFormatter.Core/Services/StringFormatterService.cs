@@ -2,6 +2,7 @@
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Formats.Asn1;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
@@ -69,11 +70,29 @@ namespace StringFormatter.Core.Services
             var startIndex = index;
             var substring = GetSubstring(sb, startIndex, ref index).Trim();
             var posOfSquareBracket = substring.IndexOf('[');
+            var type = target.GetType();
 
             var valueString = "";
             if (posOfSquareBracket == -1)
             {
-
+                if (_cache.TryGetValue(type, out var dict)
+                    && dict.TryGetValue(substring, out var func))
+                {
+                    valueString = func(target);
+                }
+                else
+                {
+                    var newFunc = GetValueConverter(type, substring);
+                    valueString = newFunc(target);
+                    _cache.AddOrUpdate(
+                        type,
+                        new Dictionary<string, Func<object, string>> { { substring, newFunc } },
+                        (_, d) =>
+                        {
+                            d.Add(substring, newFunc);
+                            return d;
+                        });
+                }
             }
             else
             {
@@ -97,29 +116,45 @@ namespace StringFormatter.Core.Services
                     throw new ArgumentException($"Cannot parse collection index {collectionIndexString}");
                 }
 
-                if (_collectionCache.TryGetValue(target.GetType(), out var dict) 
+                if (_collectionCache.TryGetValue(type, out var dict) 
                     && dict.TryGetValue(memberName, out var func))
                 {
                     valueString = func(target, collectionIndex);
                 }
                 else
                 {
-
+                    var newFunc = GetCollectionValueConverter(type, memberName);
+                    valueString = newFunc(target, collectionIndex);
+                    _collectionCache.AddOrUpdate(
+                        type,
+                        new Dictionary<string, Func<object, int, string>> { { memberName, newFunc } },
+                        (_, d) =>
+                        {
+                            d.Add(memberName, newFunc);
+                            return d;
+                        });
                 }
             }
+
+            --startIndex;
+            var substringLengthWithCurlyBraces = substring.Length + 2;
+            sb.Remove(startIndex, substringLengthWithCurlyBraces);
+            sb.Insert(startIndex, valueString);
+
+            index = index - substringLengthWithCurlyBraces + valueString.Length;
         }
 
         private static Func<object, string> GetValueConverter(Type target, string memberName)
         {
-            var members = target.GetMembers(BindingFlags.Instance);
+            var members = target.GetMembers(BindingFlags.Instance | BindingFlags.Public);
 
             if (!members.Any(m => m.Name == memberName))
             {
                 throw new ArgumentException($"Cannot find public member with such name: {memberName}");
             }
 
-            var parameter = Expression.Parameter(target, "p");
-            var memberExpression = Expression.PropertyOrField(Expression.TypeAs(parameter, target.GetType()), memberName);
+            var parameter = Expression.Parameter(typeof(object), "p");
+            var memberExpression = Expression.PropertyOrField(Expression.TypeAs(parameter, target), memberName);
             var toStringExpression = Expression.Call(memberExpression, "ToString", null, null);
             var func = Expression.Lambda<Func<object, string>>(toStringExpression, parameter).Compile();
 
@@ -128,15 +163,15 @@ namespace StringFormatter.Core.Services
 
         private static Func<object, int, string> GetCollectionValueConverter(Type target, string memberName)
         {
-            var members = target.GetMembers(BindingFlags.Instance);
+            var members = target.GetMembers(BindingFlags.Instance | BindingFlags.Public);
 
             if (!members.Any(m => m.Name == memberName))
             {
                 throw new ArgumentException($"Cannot find public member with such name: {memberName}");
             }
 
-            var parameter = Expression.Parameter(target, "p");
-            var memberExpression = Expression.PropertyOrField(Expression.TypeAs(parameter, target.GetType()), memberName);
+            var parameter = Expression.Parameter(typeof(object), "p");
+            var memberExpression = Expression.PropertyOrField(Expression.TypeAs(parameter, target), memberName);
             var indexParameter = Expression.Parameter(typeof(int), "i");
             var arrayAccess = Expression.ArrayAccess(memberExpression, indexParameter);
             var toStringExpression = Expression.Call(arrayAccess, "ToString", null, null);
